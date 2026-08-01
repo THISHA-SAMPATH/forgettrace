@@ -1,15 +1,18 @@
 # ForgetTrace — An Agent for Provable Data Erasure
 
-Built for [Build with DataHub: The Agent Hackathon](https://datahub.devpost.com/) — *Agents That Do Real Work* track.
+## Motivation
 
-## The problem
+"Right to be forgotten" requests (GDPR Article 17, and equivalents like India's DPDP
+Act) sound simple until you actually have to fulfill one. Deleting a customer's row in
+the source database is the easy 10%. The hard 90% is everything derived from that row —
+a Spark job that copied it into an enriched table, a dashboard built on top of that, an
+ML feature store that trained on it six months ago. Miss any of those, and the deletion
+isn't actually complete. Worse, there's usually no record proving what _was_ checked,
+which is its own compliance risk when a regulator asks for evidence.
 
-When a "right to be forgotten" (GDPR/DPDP) request comes in, finding the customer's row
-in the source database is the easy part. The hard part — the part that turns into a
-compliance incident — is everything derived from that row: the Spark job that copied it
-into an enriched table, the dashboard built on top of that, the ML feature store that
-trained on it six months ago. If any of those get missed, the deletion isn't actually
-complete, and there's no record proving what *was* checked.
+This is a narrow, opinionated take on solving that: an agent that doesn't just find
+where sensitive data lives, but proves it — with a signed, auditable trail a legal or
+privacy team could actually use.
 
 ## What ForgetTrace does
 
@@ -36,7 +39,7 @@ See [`examples/sample_report.json`](examples/sample_report.json) for real output
 ## Why the audit trail matters more than the search
 
 Most "find the customer's data" tools stop at a list of table names. A compliance team
-doesn't need a list — it needs *evidence*: what was checked, what's confirmed vs.
+doesn't need a list — it needs _evidence_: what was checked, what's confirmed vs.
 uncertain, and a signature so the record can't be quietly edited after the fact. That's
 the part of this project that took the most work, and the part that's meant to actually
 be useful to a data/privacy team, not just a demo.
@@ -80,38 +83,63 @@ Requires a running DataHub instance (see
 ```bash
 # 1. Spin up DataHub and load a sample dataset with real lineage
 datahub docker quickstart
-datahub datapack load healthcare
+datahub datapack load showcase-ecommerce --force
 
 # 2. Install ForgetTrace
-git clone <this-repo>
+git clone https://github.com/THISHA-SAMPATH/forgettrace.git
 cd forgettrace
 pip install -e .
 
 # 3. Point at your DataHub instance
 export DATAHUB_GMS_URL="http://localhost:8080"
-export DATAHUB_GMS_TOKEN="<your-token>"
+export DATAHUB_GMS_TOKEN=""
 
 # 4. Run a trace
-forgettrace trace --subject-column patient_id --subject-value P10432
+forgettrace trace --subject-column customer_id --subject-value <a-customer-id>
 
 # 5. Verify a report hasn't been tampered with
 forgettrace verify reports/<request-id>.json
 ```
 
+## Testing
+
+10 unit tests cover the parts most likely to break silently: cycle-safe graph
+traversal, confidence-score decay, staleness penalties, and SHA-256 tamper detection
+on the audit report.
+
+```bash
+pip install pytest
+pytest tests/ -v
+```
+
 ## Sample data used
 
-Demo runs against DataHub's `healthcare` sample datapack (synthetic patient records,
-~55k rows, with planted data quality issues) — safe for an Apache 2.0 public submission.
+Demo runs against DataHub's `showcase-ecommerce` sample data pack (~1,000 entities
+across Snowflake, S3, dbt, Looker, Tableau, and PowerBI, with real lineage) — safe for
+an Apache 2.0 public repo.
 
 ## Status / limitations
 
-Built solo in a two-week hackathon window. Known limitations, noted honestly rather than
-glossed over:
+Built solo as a focused, end-to-end project rather than a broad platform. Known
+limitations, noted honestly rather than glossed over:
+
 - Staleness detection is a simple time-threshold heuristic, not a full data-quality model
 - Traversal depth is capped (configurable via `--max-hops`) — extremely deep lineage
   graphs will flag for manual review rather than traverse indefinitely
-- Tested against DataHub's sample datapacks; not yet run against a production-scale
+- Tested against DataHub's sample data packs; not yet run against a production-scale
   (100k+ entity) graph
+
+## Future work
+
+- Batch mode: process a list of subject identifiers in one run
+- Pluggable staleness model (replace the fixed time threshold with something that
+  accounts for how frequently a given pipeline actually runs)
+- Optional integration with a ticketing system (Jira, Linear) to push remediation
+  tasks directly instead of leaving them in the JSON report
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
