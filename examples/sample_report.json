@@ -1,0 +1,86 @@
+{
+  "request_id": "c6a1c270-6d58-41ca-be7c-cc3312883fe5",
+  "generated_at": "2026-08-01T06:31:20.463624+00:00",
+  "subject_column": "patient_id",
+  "subject_value": "P10432",
+  "datasets_found": [
+    {
+      "urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,healthcare.patients,PROD)",
+      "platform": "postgres",
+      "owner": "data-eng-team",
+      "hops": 0,
+      "confidence": "direct_match",
+      "path": [
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,healthcare.patients,PROD)"
+      ],
+      "stale": false,
+      "confidence_score": 1.0
+    },
+    {
+      "urn": "urn:li:dataset:(urn:li:dataPlatform:spark,healthcare.patient_visits_enriched,PROD)",
+      "platform": "spark",
+      "owner": "analytics-team",
+      "hops": 1,
+      "confidence": "downstream_derived",
+      "path": [
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,healthcare.patients,PROD)",
+        "urn:li:dataset:(urn:li:dataPlatform:spark,healthcare.patient_visits_enriched,PROD)"
+      ],
+      "stale": false,
+      "confidence_score": 0.85
+    },
+    {
+      "urn": "urn:li:dashboard:(looker,patient_readmission_dashboard)",
+      "platform": "looker",
+      "owner": "clinical-ops",
+      "hops": 2,
+      "confidence": "downstream_derived",
+      "path": [
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,healthcare.patients,PROD)",
+        "urn:li:dataset:(urn:li:dataPlatform:spark,healthcare.patient_visits_enriched,PROD)",
+        "urn:li:dashboard:(looker,patient_readmission_dashboard)"
+      ],
+      "stale": false,
+      "confidence_score": 0.7
+    },
+    {
+      "urn": "urn:li:dataset:(urn:li:dataPlatform:snowflake,healthcare.patient_ml_features,PROD)",
+      "platform": "snowflake",
+      "owner": "ml-platform-team",
+      "hops": 3,
+      "confidence": "downstream_derived",
+      "path": [
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,healthcare.patients,PROD)",
+        "urn:li:dataset:(urn:li:dataPlatform:spark,healthcare.patient_visits_enriched,PROD)",
+        "urn:li:dataset:(urn:li:dataPlatform:snowflake,healthcare.patient_ml_features,PROD)"
+      ],
+      "stale": true,
+      "confidence_score": 0.28
+    }
+  ],
+  "flagged_issues": [
+    {
+      "urn": "urn:li:dataset:(urn:li:dataPlatform:snowflake,healthcare.patient_ml_features,PROD)",
+      "issue": "lineage edge from healthcare.patient_visits_enriched not confirmed in over 180 days",
+      "action_needed": "manual verification before erasure - edge may no longer be accurate"
+    }
+  ],
+  "remediation_tasks": [
+    {
+      "task_id": "rem-000",
+      "urn": "urn:li:dataset:(urn:li:dataPlatform:snowflake,healthcare.patient_ml_features,PROD)",
+      "owner": "ml-platform-team",
+      "priority": "high",
+      "action": "manual verification before erasure - edge may no longer be accurate",
+      "reason": "lineage edge from healthcare.patient_visits_enriched not confirmed in over 180 days"
+    }
+  ],
+  "summary": {
+    "total_datasets_affected": 4,
+    "direct_matches": 1,
+    "downstream_derived": 3,
+    "issues_requiring_manual_review": 1,
+    "open_remediation_tasks": 1
+  },
+  "signature": "0f1970e96ef6c9e9ee2f41848c1c0f1fd8dc92abda33f08a018f00bd598b5de5"
+}
