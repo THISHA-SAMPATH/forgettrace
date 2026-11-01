@@ -9,9 +9,9 @@ trust broken/renamed lineage edges. This module handles all three.
 """
 
 import datetime
+from collections import deque
 from dataclasses import dataclass, field
-
-from forgettrace.datahub_client import DataHubMCPClient
+from typing import Protocol
 
 STALE_EDGE_DAYS = 180  # lineage edges not observed/updated in this many days get flagged
 
@@ -48,15 +48,49 @@ class FlaggedIssue:
     action_needed: str
 
 
-async def find_direct_matches(client: DataHubMCPClient, subject_column: str, subject_value: str) -> list[str]:
-    """Find every dataset/table that directly contains the subject's identifier."""
+class SubjectDataChecker(Protocol):
+    """A connector that can check a subject value inside an authorised dataset."""
+
+    async def contains_subject(self, urn: str, column: str, value: str) -> bool:
+        ...
+
+
+async def find_direct_matches(
+    client,
+    subject_column: str,
+    subject_value: str,
+    subject_checker: SubjectDataChecker | None = None,
+) -> list[str]:
+    """Return datasets proven to contain this subject's value.
+
+    DataHub metadata search only discovers candidate datasets; it cannot prove
+    that a particular row/value exists. A data connector must verify each
+    candidate. This fail-closed requirement prevents metadata matches from
+    being incorrectly reported as confirmed subject matches.
+    """
+    if subject_checker is None:
+        raise RuntimeError(
+            "Subject-level verification is not configured. DataHub metadata "
+            "search can identify candidate datasets, but an authorised data "
+            "connector is required to confirm the subject value."
+        )
+
     results = await client.search(query=f'"{subject_column}"', entity_types=["dataset"])
     entities = results.get("entities", results.get("results", []))
-    return [e["urn"] for e in entities if "urn" in e]
+    candidate_urns = list(dict.fromkeys(
+        entity["urn"] for entity in entities
+        if isinstance(entity, dict) and entity.get("urn")
+    ))
+
+    confirmed: list[str] = []
+    for urn in candidate_urns:
+        if await subject_checker.contains_subject(urn, subject_column, subject_value):
+            confirmed.append(urn)
+    return confirmed
 
 
 async def walk_downstream(
-    client: DataHubMCPClient,
+    client,
     root_urns: list[str],
     max_hops: int = 6,
 ) -> tuple[list[LineageNode], list[FlaggedIssue]]:
@@ -69,9 +103,10 @@ async def walk_downstream(
     nodes: list[LineageNode] = []
     issues: list[FlaggedIssue] = []
 
-    frontier: list[tuple[str, int, list[str]]] = [(urn, 0, [urn]) for urn in root_urns]
+    unique_roots = list(dict.fromkeys(root_urns))
+    frontier = deque((urn, 0, [urn], False) for urn in unique_roots)
 
-    for urn in root_urns:
+    for urn in unique_roots:
         visited.add(urn)
         entity = (await client.get_entities([urn])).get(urn, {})
         nodes.append(
@@ -86,19 +121,23 @@ async def walk_downstream(
         )
 
     while frontier:
-        current_urn, current_hops, current_path = frontier.pop(0)
-        if current_hops >= max_hops:
-            issues.append(
-                FlaggedIssue(
-                    urn=current_urn,
-                    issue=f"lineage traversal hit max_hops={max_hops} without terminating",
-                    action_needed="manual review — graph may be deeper than configured limit",
-                )
-            )
-            continue
-
+        current_urn, current_hops, current_path, path_is_stale = frontier.popleft()
         lineage = await client.get_lineage(current_urn, direction="downstream", max_hops=1)
         edges = lineage.get("edges", lineage.get("downstream", []))
+
+        # Only flag the depth boundary when there is actually another edge to
+        # traverse. A leaf exactly at max_hops is a complete traversal, not an
+        # incomplete one.
+        if current_hops >= max_hops:
+            if edges:
+                issues.append(
+                    FlaggedIssue(
+                        urn=current_urn,
+                        issue=f"lineage traversal reached max_hops={max_hops} with further descendants",
+                        action_needed="manual review — increase the traversal limit or inspect remaining lineage",
+                    )
+                )
+            continue
 
         for edge in edges:
             child_urn = edge.get("urn") or edge.get("destination_urn")
@@ -107,6 +146,7 @@ async def walk_downstream(
 
             last_observed = edge.get("last_observed") or edge.get("updated_at")
             edge_is_stale = _is_stale(last_observed)
+            new_path_is_stale = path_is_stale or edge_is_stale
             if edge_is_stale:
                 issues.append(
                     FlaggedIssue(
@@ -131,11 +171,11 @@ async def walk_downstream(
                     hops=new_hops,
                     confidence="downstream_derived",
                     path=new_path,
-                    stale=edge_is_stale,
-                    confidence_score=_score(new_hops, edge_is_stale),
+                    stale=new_path_is_stale,
+                    confidence_score=_score(new_hops, new_path_is_stale),
                 )
             )
-            frontier.append((child_urn, new_hops, new_path))
+            frontier.append((child_urn, new_hops, new_path, new_path_is_stale))
 
     return nodes, issues
 
@@ -145,7 +185,9 @@ def _is_stale(last_observed: str | None) -> bool:
         return True  # no timestamp at all is itself worth flagging
     try:
         observed_dt = datetime.datetime.fromisoformat(last_observed.replace("Z", "+00:00"))
-    except ValueError:
+        if observed_dt.tzinfo is None:
+            observed_dt = observed_dt.replace(tzinfo=datetime.timezone.utc)
+        age_days = (datetime.datetime.now(datetime.timezone.utc) - observed_dt).days
+    except (TypeError, ValueError):
         return True
-    age_days = (datetime.datetime.now(datetime.timezone.utc) - observed_dt).days
     return age_days > STALE_EDGE_DAYS

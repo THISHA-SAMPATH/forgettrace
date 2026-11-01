@@ -11,36 +11,100 @@ isn't actually complete. Worse, there's usually no record proving what _was_ che
 which is its own compliance risk when a regulator asks for evidence.
 
 This is a narrow, opinionated take on solving that: an agent that doesn't just find
-where sensitive data lives, but proves it — with a signed, auditable trail a legal or
+where sensitive data lives, but proves it — with a tamper-evident, auditable trail a legal or
 privacy team could actually use.
 
 ## What ForgetTrace does
 
 Give it a subject identifier (`patient_id: P10432`). It:
 
-1. Searches DataHub for every dataset that directly contains that identifier
-2. Walks the **downstream lineage graph** recursively from each match — every derived
+1. Searches DataHub metadata for candidate datasets whose schemas may contain that identifier column
+2. Requires an authorised subject-data connector to confirm the specific identifier value before treating a candidate as a direct match
+3. Walks the **downstream lineage graph** recursively from each confirmed match — every derived
    table, dashboard, and ML feature — using DataHub's MCP Server
-3. Scores each finding with a **numeric confidence score** — 1.0 for a direct match,
+4. Scores each finding with a **numeric confidence score** — 1.0 for a direct match,
    decaying with hop count and halved further if the lineage edge is stale/unconfirmed —
    so it's clear at a glance which findings are certain and which need a second look
-4. Flags anything DataHub can't confirm confidently: stale lineage edges, missing
+5. Flags anything DataHub can't confirm confidently: stale lineage edges, missing
    timestamps, edges near the traversal depth limit — so a human reviews the risky parts
    instead of the agent silently trusting incomplete metadata
-5. Generates a **remediation task queue** from those flags — concrete next steps
+6. Generates a **remediation task queue** from those flags — concrete next steps
    (owner, priority, action) rather than just a report to read
-6. Produces a **signed audit report** (SHA-256 over its own contents) — proof of exactly
+7. Produces a **tamper-evident report hash** (SHA-256 over its own contents) — a way to detect changes when the trusted original hash is protected. This is not a digital signature or proof of author identity. The report records exactly
    what was found, when, so it can be handed to a legal/compliance team or a regulator,
    and any later tampering with the report is detectable
 
 This is deliberately narrow: one clean, complete workflow rather than a broad toolkit.
 See [`examples/sample_report.json`](examples/sample_report.json) for real output.
 
+## PostgreSQL subject verification connector
+
+ForgetTrace includes an optional PostgreSQL connector for checking whether a
+specific subject value exists in an explicitly configured table. It does not
+automatically scan every database table: each DataHub dataset URN must be mapped
+to a schema/table, and each searchable subject column must be allow-listed.
+
+Install the optional driver in the project environment:
+
+```powershell
+python -m pip install -e ".[postgres,dev]"
+```
+
+Keep database credentials out of source control. In PowerShell, set a connection
+string for the current terminal session (use a dedicated database role with
+`SELECT` permission only on the tables ForgetTrace is allowed to inspect):
+
+```powershell
+$env:FORGETTRACE_POSTGRES_DSN = "postgresql://forgettrace_reader:YOUR_PASSWORD@localhost:5432/demo"
+```
+
+Example connector setup using synthetic data names:
+
+```python
+import os
+
+from forgettrace.postgres_connector import PostgresDataset, PostgresSubjectChecker
+
+checker = PostgresSubjectChecker(
+    dsn=os.environ["FORGETTRACE_POSTGRES_DSN"],
+    datasets={
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,public.customers,PROD)":
+            PostgresDataset(
+                schema="public",
+                table="customers",
+                subject_columns=frozenset({"customer_id"}),
+            )
+    },
+)
+
+# In an async workflow: found = await checker.contains_subject(
+#     "urn:li:dataset:(urn:li:dataPlatform:postgres,public.customers,PROD)",
+#     "customer_id",
+#     "DEMO-100",
+# )
+```
+
+The connector uses parameterised values and safely quoted identifiers. It returns
+a boolean and does not log the subject value. The connector is currently a
+separate building block; the CLI workflow still needs configuration and wiring
+to pass it into `find_direct_matches`.
+
+## Important implementation boundary
+
+DataHub metadata search identifies candidate datasets; it does not inspect table rows
+and cannot prove that a specific subject value exists. The core now fails closed unless
+an authorised `SubjectDataChecker` is supplied. A production database connector and
+its access-control policy are required before subject-level matches can be confirmed.
+
+The current project traces metadata lineage and generates review tasks. It does not
+execute data deletion or independently verify erasure. Do not describe a request as
+completed or erased based only on a lineage report.
+
 ## Why the audit trail matters more than the search
 
 Most "find the customer's data" tools stop at a list of table names. A compliance team
 doesn't need a list — it needs _evidence_: what was checked, what's confirmed vs.
-uncertain, and a signature so the record can't be quietly edited after the fact. That's
+uncertain, and a protected integrity record so the report's contents can be checked later. That's
 the part of this project that took the most work, and the part that's meant to actually
 be useful to a data/privacy team, not just a demo.
 
@@ -59,10 +123,10 @@ subject ID
 [remediation.py] ── turns flags + low-confidence nodes into an owned task queue
    │
    ▼
-[audit.py] ── builds structured report, SHA-256 signs it
+[audit.py] ── builds structured report + SHA-256 integrity hash
    │
    ▼
-signed JSON report (+ CLI table + task list)
+JSON report with an integrity hash (+ CLI table + task list)
 ```
 
 - **`forgettrace/datahub_client.py`** — thin wrapper over the official
@@ -103,7 +167,7 @@ forgettrace verify reports/<request-id>.json
 
 ## Testing
 
-10 unit tests cover the parts most likely to break silently: cycle-safe graph
+20 unit tests cover the parts most likely to break silently: cycle-safe graph
 traversal, confidence-score decay, staleness penalties, and SHA-256 tamper detection
 on the audit report.
 

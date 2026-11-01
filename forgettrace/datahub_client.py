@@ -17,10 +17,6 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-
-
 class DataHubMCPClient:
     def __init__(self, gms_url: str | None = None, gms_token: str | None = None):
         self.gms_url = gms_url or os.environ.get("DATAHUB_GMS_URL", "http://localhost:8080")
@@ -30,6 +26,17 @@ class DataHubMCPClient:
 
     @asynccontextmanager
     async def connect(self):
+        # Import MCP only when a live DataHub connection is requested. This keeps
+        # the core graph/audit modules importable in lightweight test environments.
+        try:
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+        except ImportError as exc:
+            raise RuntimeError(
+                "The MCP dependency is required for live DataHub access. "
+                "Install the project dependencies with `pip install -e .`."
+            ) from exc
+
         server_params = StdioServerParameters(
             command="uvx",
             args=["mcp-server-datahub"],
